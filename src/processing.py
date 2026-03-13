@@ -160,14 +160,18 @@ def smooth_raster(
 def compute_boundary(meters: NDArray, separation: float):
     """Compute a tight concave hull around the tree points.
 
-    Uses alphashape with optimized alpha. Falls back to convex hull
-    if the alpha shape is empty or a MultiPolygon. Applies a small
-    buffer of 0.5 × separation so edge trees aren't excluded.
+    Uses alphashape with a fixed alpha derived from the median NN
+    separation (alpha = 1 / separation).  This avoids the very slow
+    ``optimizealpha`` routine which can hang on large point sets.
+
+    Falls back to convex hull if the alpha shape is empty or a
+    MultiPolygon.  Applies a buffer of 1.5 × separation so edge
+    trees aren't excluded.
 
     Returns a shapely geometry.
     """
     try:
-        alpha = alphashape.optimizealpha(meters)
+        alpha = 1.0 / separation
         boundary = alphashape.alphashape(meters, alpha)
     except Exception:
         boundary = MultiPoint(meters).convex_hull
