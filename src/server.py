@@ -39,4 +39,4 @@ def get_missing_trees(orchard_id: int) -> list[Coordinate]:
         raise HTTPException(status_code=404, detail=f"No surveys found for orchard {orchard_id}")
 
     missing = result.get("missing_trees", [])
-    return [Coordinate(lat=lat, lng=lng) for lat, lng in missing]
+    return [Coordinate(lng=lng, lat=lat) for lng, lat in missing]
