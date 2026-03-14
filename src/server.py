@@ -20,8 +20,12 @@ class Coordinate(BaseModel):
     lng: float
 
 
-@app.get("/orchards/{orchard_id}/missing-trees", response_model=list[Coordinate])
-def get_missing_trees(orchard_id: int) -> list[Coordinate]:
+class MissingTreesResponse(BaseModel):
+    missing_trees: list[Coordinate]
+
+
+@app.get("/orchards/{orchard_id}/missing-trees", response_model=MissingTreesResponse)
+def get_missing_trees(orchard_id: int) -> MissingTreesResponse:
     """Return missing tree coordinates for the given orchard."""
     token = os.environ.get("AEROBOTICS_API_TOKEN")
     if not token:
@@ -39,4 +43,6 @@ def get_missing_trees(orchard_id: int) -> list[Coordinate]:
         raise HTTPException(status_code=404, detail=f"No surveys found for orchard {orchard_id}")
 
     missing = result.get("missing_trees", [])
-    return [Coordinate(lng=lng, lat=lat) for lng, lat in missing]
+    return MissingTreesResponse(
+        missing_trees=[Coordinate(lng=lng, lat=lat) for lng, lat in missing],
+    )

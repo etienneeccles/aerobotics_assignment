@@ -24,6 +24,7 @@ from scipy.spatial import cKDTree as KDTree
 
 def visualize_pipeline(
     tree_points: list[tuple[float, float]],
+    boundary_polygon: list[tuple[float, float]] | None = None,
     config: PipelineConfig | None = None,
 ) -> None:
     """Run the raster pipeline step-by-step with plots at each stage."""
@@ -42,7 +43,13 @@ def visualize_pipeline(
     print(f"Raster shape: {raster.shape}, pixel size: {pixel_size:.2f} m")
 
     smoothed = smooth_raster(raster, pixel_size, separation, sigma_factor=config.sigma_factor)
-    boundary = compute_boundary(meters, separation)
+
+    if boundary_polygon:
+        boundary = compute_boundary(boundary_polygon, centroid, cos_lat, separation)
+    else:
+        from shapely.geometry import MultiPoint
+        boundary = MultiPoint(meters).convex_hull.buffer(separation * 1.5)
+
     occupancy = compute_occupancy_mask(boundary, x_origin, y_origin, pixel_size, raster.shape)
     gap_mask = find_gaps(smoothed, occupancy, threshold=config.threshold)
     gap_meters = gap_pixels_to_coords(gap_mask, x_origin, y_origin, pixel_size, occupancy)
@@ -138,5 +145,6 @@ if __name__ == "__main__":
     client = AeroboticsClient(token)
     results = fetch_orchard_data(client, ORCHARD_ID)
     tree_points = results["tree_points"]
+    boundary_polygon = results.get("boundary_polygon")
     print(f"Got {len(tree_points)} tree points, running visualization...")
-    visualize_pipeline(tree_points)
+    visualize_pipeline(tree_points, boundary_polygon=boundary_polygon)

@@ -25,6 +25,19 @@ def extract_tree_points(tree_records: list[dict]) -> list[tuple[float, float]]:
     return [(r["lng"], r["lat"]) for r in tree_records]
 
 
+def parse_boundary_polygon(raw) -> list[tuple[float, float]]:
+    """Convert a polygon string into [(lng, lat), ...] tuples.
+    
+    The API returns the polygon as space-separated "lng,lat" pairs,
+    e.g. "18.825,−32.327 18.827,−32.328 ...".
+    """
+    result = []
+    for pair in str(raw).strip().split():
+        lng_s, lat_s = pair.split(",")
+        result.append((float(lng_s), float(lat_s)))
+    return result
+
+
 def fetch_orchard_data(client: AeroboticsClient, orchard_id: int) -> dict:
     """Execute the complete 3-step data-fetching workflow for an orchard.
 
@@ -112,7 +125,14 @@ def fetch_orchard_data(client: AeroboticsClient, orchard_id: int) -> dict:
 
     # Step 6: Detect missing trees
     console.log("[bold]Running missing tree detection...[/bold]")
-    result["missing_trees"] = detect_missing_trees(result["tree_points"])
+    boundary_polygon = survey.get("polygon")
+    if boundary_polygon:
+        boundary_polygon = parse_boundary_polygon(boundary_polygon)
+        console.log(f"  Using survey boundary polygon ({len(boundary_polygon)} vertices)")
+    else:
+        console.log("  [yellow]No polygon in survey, falling back to convex hull[/yellow]")
+    result["boundary_polygon"] = boundary_polygon
+    result["missing_trees"] = detect_missing_trees(result["tree_points"], boundary_polygon=boundary_polygon)
     console.log(f"  Detected [yellow]{len(result['missing_trees'])}[/yellow] missing tree(s)")
 
     console.log(f"[bold green]Workflow complete for orchard {orchard_id}[/bold green]")

@@ -8,7 +8,6 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import cKDTree as KDTree
 from scipy.ndimage import gaussian_filter, label as ndimage_label
-import alphashape
 from shapely.geometry import MultiPoint, Point
 
 
@@ -157,29 +156,26 @@ def smooth_raster(
 # Step 4: Threshold to find gaps
 # ---------------------------------------------------------------------------
 
-def compute_boundary(meters: NDArray, separation: float):
-    """Compute a tight concave hull around the tree points.
+def compute_boundary(
+    boundary_polygon: list[tuple[float, float]],
+    centroid: NDArray,
+    cos_lat: float,
+    separation: float,
+):
+    """Convert a boundary polygon from (lng, lat) coords to a local-metre
+    Shapely polygon and apply a buffer of 1.5 × separation.
 
-    Uses alphashape with a fixed alpha derived from the median NN
-    separation (alpha = 1 / separation).  This avoids the very slow
-    ``optimizealpha`` routine which can hang on large point sets.
-
-    Falls back to convex hull if the alpha shape is empty or a
-    MultiPolygon.  Applies a buffer of 1.5 × separation so edge
-    trees aren't excluded.
-
-    Returns a shapely geometry.
+    If buffering produces a MultiPolygon, the largest polygon by area
+    is returned to ensure a single Polygon result.
     """
-    try:
-        alpha = 1.0 / separation
-        boundary = alphashape.alphashape(meters, alpha)
-    except Exception:
-        boundary = MultiPoint(meters).convex_hull
-
-    if boundary.is_empty or boundary.geom_type == "MultiPolygon":
-        boundary = MultiPoint(meters).convex_hull
-
-    return boundary.buffer(separation * 1.5)
+    from shapely.geometry import Polygon as ShapelyPolygon
+    poly_arr = np.array(boundary_polygon)
+    poly_meters = np.column_stack([
+        (poly_arr[:, 0] - centroid[0]) * 111_111 * cos_lat,
+        (poly_arr[:, 1] - centroid[1]) * 111_111,
+    ])
+    boundary = ShapelyPolygon(poly_meters).buffer(0)  # fix any self-intersections
+    return boundary
 
 
 def compute_occupancy_mask(
@@ -299,17 +295,18 @@ def gap_pixels_to_coords(
 
 def detect_missing_trees(
     tree_points: list[tuple[float, float]],
+    boundary_polygon: list[tuple[float, float]] | None = None,
     config: PipelineConfig | None = None,
 ) -> list[tuple[float, float]]:
     """Run the raster-based missing-tree detection pipeline.
 
-    1. Convert to local metres
-    2. Compute median nearest-neighbour separation
-    3. Build density raster (pixel_size = separation / density_factor)
-    4. Gaussian smooth (sigma = sigma_factor * separation)
-    5. Threshold to find gap pixels
-    6. Filter gap pixels to those near actual trees (inside orchard)
-    7. Convert back to (lng, lat)
+    Parameters
+    ----------
+    tree_points : list of (lng, lat) tuples.
+    boundary_polygon : optional list of (lng, lat) tuples from the survey API.
+        If provided, used as the orchard boundary. Otherwise falls back to
+        convex hull of the tree points.
+    config : pipeline tuning parameters.
 
     Returns gap locations as (lng, lat) tuples.
     Returns empty list if fewer than 3 points.
@@ -323,31 +320,29 @@ def detect_missing_trees(
     points = np.array(tree_points)
     meters, centroid, cos_lat = _to_local_meters(points)
 
-    # Step 1
     separation = median_nn_separation(meters)
 
-    # Step 2
     raster, x_origin, y_origin, pixel_size = build_density_raster(
         meters, separation, pad_factor=config.pad_factor, density_factor=config.density_factor,
     )
 
-    # Step 3
     smoothed = smooth_raster(raster, pixel_size, separation, sigma_factor=config.sigma_factor)
 
-    # Step 4: hull-based occupancy mask + threshold
-    boundary = compute_boundary(meters, separation)
+    # Boundary: use survey polygon if available, else convex hull fallback
+    if boundary_polygon:
+        boundary = compute_boundary(boundary_polygon, centroid, cos_lat, separation)
+    else:
+        boundary = MultiPoint(meters).convex_hull.buffer(separation * 1.5)
+
     occupancy = compute_occupancy_mask(boundary, x_origin, y_origin, pixel_size, raster.shape)
     gap_mask = find_gaps(smoothed, occupancy, threshold=config.threshold)
 
-    # Step 5: connected-component centroids in metres
     gap_meters = gap_pixels_to_coords(gap_mask, x_origin, y_origin, pixel_size, occupancy)
 
     if len(gap_meters) == 0:
         print("Found 0 gaps")
         return []
 
-    # Step 6: filter to gaps that are actually inside the orchard
-    # (within 1.5 * separation of any real tree)
     tree_kd = KDTree(meters)
     dists, _ = tree_kd.query(gap_meters)
     inside = dists < (separation * 1.5)
@@ -357,7 +352,6 @@ def detect_missing_trees(
         print("Found 0 gaps (after proximity filter)")
         return []
 
-    # Step 7: back to lng/lat
     gaps_latlng = _from_local_meters(gap_meters, centroid, cos_lat)
     print(f"Found {len(gaps_latlng)} gaps")
 
